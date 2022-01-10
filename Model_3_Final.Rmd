@@ -1,0 +1,151 @@
+---
+title: "Model_3"
+author: "Ian Brogan"
+date: "5/7/2020"
+output: html_document
+---
+
+# Setup
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(tidyverse)
+
+ecommerce <- as.data.frame(read_rds("C:/Users/Ian Brogan/Desktop/Willamette Stuff/Spring 2020/ML/ecommerce.rds") %>%
+  rowid_to_column("id"))
+```
+
+# Data Exploration
+
+```{r}
+glimpse(ecommerce)
+```
+
+```{r}
+max(ecommerce$final_total)
+min(ecommerce$final_total)
+mean(ecommerce$final_total)
+```
+
+```{r}
+ecommerce %>%
+  count(final_total) %>%
+  arrange(desc(n))
+```
+A lot of 25 dollar purchases, and 21.16.
+
+```{r}
+ecommerce %>%
+  group_by(repeat_customer) %>%
+  summarise_at(vars(-product_details, -date, -id), funs(mean(., na.rm=TRUE)))
+```
+So the average final total for repeat customers is $23.00 more than that of non-repeat customers.
+
+```{r}
+ecommerce %>%
+  count(repeat_customer)
+  
+```
+
+We are also dealing with *A LOT* more FALSE than TRUE. 
+
+# Getting Some Top Words From Data
+
+```{r}
+library(tidytext)
+data(stop_words)
+```
+```{r}
+top_words <- ecommerce %>%
+  unnest_tokens(word, product_details) %>%
+  anti_join(stop_words) %>% 
+  filter(!(word %in% c("Product Name:", "[Pp]roduct"))) %>% 
+  count(id, word) %>% 
+  group_by(id) %>% 
+  mutate(exists = if_else(n>0,1,0)) %>%
+  ungroup %>% 
+  right_join(ecommerce, by="id") %>%
+  count(repeat_customer, word) %>% 
+  group_by(repeat_customer) %>% 
+  top_n(10,n) %>%
+  ungroup %>% 
+  select(word) %>% 
+  distinct()
+
+top_words
+```
+
+# PCA
+## Setup
+```{r}
+comm_words <- ecommerce %>% 
+  unnest_tokens(word, product_details) %>%
+  anti_join(stop_words) %>%
+  filter(!(word %in% c("Product Name:", "[Pp]roduct"))) %>% #get rid of these words
+  count(id, word) %>% 
+  group_by(word) %>% 
+  mutate(total = sum(n)) %>% 
+  filter(total > 500) %>% #words that only show up more than 500 times
+  ungroup %>% 
+  group_by(id) %>% 
+  mutate(exists = if_else(n>0,1,0)) %>% 
+  ungroup %>% 
+  pivot_wider(id_cols = id, names_from = word, values_from = exists, values_fill = c(exists=0)) %>% 
+  right_join(ecommerce, by="id") %>% 
+  replace(.,is.na(.),0) %>% 
+  select(-id, -date, -product_details, -final_total) 
+```
+```{r}
+names(comm_words)
+```
+
+## Run the principle component analysis
+
+```{r}
+pr_ecomm <- prcomp(x = select(comm_words,-repeat_customer), scale = F, center = T)
+summary(pr_ecomm)
+```
+
+```{r}
+screeplot(pr_ecomm, type = "lines")
+```
+
+Talk about a clear scree plot...
+
+## Visualize biplots
+
+```{r}
+biplot(pr_ecomm)
+biplot(pr_ecomm, choices = c(1,2))
+```
+
+## Factor loadings
+
+```{r}
+pr_ecomm$rotation
+```
+
+```{r}
+head(pr_ecomm$x)
+```
+
+## Add variety label to principle components and name them
+
+```{r}
+prc_ecomm <- bind_cols(select(comm_words, repeat_customer),as.data.frame(pr_ecomm$x)) %>% 
+  select(1:30) 
+```
+```{r}
+head(prc_ecomm)
+```
+
+```{r}
+prc_ecomm<- prc_ecomm %>%
+  mutate(repeat_customer = as.character(repeat_customer))
+library(caret)
+fit <- train(repeat_customer ~ .,
+             data = prc_ecomm, 
+             method = "naive_bayes",
+             metric = "Kappa",
+             trControl = trainControl(method = "cv"))
+confusionMatrix(predict(fit, prc_ecomm),factor(prc_ecomm$repeat_customer))
+```
